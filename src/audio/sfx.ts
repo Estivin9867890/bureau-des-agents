@@ -1,20 +1,26 @@
 // Les bruitages, façon console 8 bits, fabriqués en direct par ZzFX (une toute petite librairie de
 // synthèse sonore) : aucun fichier audio. Discrets, et coupables d'un clic (le bouton du son).
-import { ZZFX, zzfx } from 'zzfx';
+// ZzFX crée un AudioContext dès qu'on l'importe : on ne le charge qu'après le premier geste de la personne.
+type Zz = typeof import('zzfx');
+let zz: Zz | null = null;
+let loading = false;
 
 type Name = 'blip' | 'spawn' | 'tick' | 'search' | 'paper' | 'print' | 'plan' | 'check' | 'ask' | 'yes' | 'no' | 'send' | 'done' | 'error' | 'click' | 'open' | 'meow' | 'pour' | 'glug';
 
 let muted = false;
 export function setMuted(m: boolean) { muted = m; }
 
-ZZFX.volume = 0.32;
-
-// Le navigateur n'autorise le son qu'après un premier geste : on réveille l'audio au premier clic.
+// Le navigateur n'autorise le son qu'après un premier geste : on charge et on réveille l'audio à ce moment-là.
+function wake() {
+  if (loading) return;
+  loading = true;
+  void import('zzfx').then((m) => { m.ZZFX.volume = 0.32; zz = m; void m.ZZFX.audioContext?.resume?.(); }).catch(() => { loading = false; });
+}
 if (typeof window !== 'undefined') {
-  const wake = () => { void ZZFX.audioContext?.resume?.(); };
   window.addEventListener('pointerdown', wake, { once: true });
   window.addEventListener('keydown', wake, { once: true });
 }
+const zzfx = (...p: (number | undefined)[]) => zz?.zzfx(...p);
 
 const notes = (list: [number, number][], vol = 0.28) => {
   for (const [f, d] of list) setTimeout(() => { if (!muted) zzfx(vol, 0, f, 0.01, 0.07, 0.18, 0, 1.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.8); }, d);

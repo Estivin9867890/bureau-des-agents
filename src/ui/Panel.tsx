@@ -7,6 +7,7 @@ import type { Role } from '../../shared/protocol.ts';
 import { sfx } from '../audio/sfx.ts';
 import { robotSprite } from '../engine/robots.ts';
 import { teamList, useOffice, type AgentView } from '../state/store.ts';
+import { IS_ARTIFACT } from '../net/mode.ts';
 import { EXAMPLES } from './Dialog.tsx';
 import { fmtDate, fmtDuration, tilde } from './format.ts';
 import { mdToHtml } from './md.ts';
@@ -26,18 +27,22 @@ export function Avatar({ role, size = 32 }: { role: Role; size?: number }) {
 
 const STATUS: Record<AgentView['status'], string> = { working: 'Au travail', reporting: 'Rend son rapport', done: 'A rendu son travail', failed: 'N’a pas pu finir' };
 
-export function Panel() {
+export function PanelContent() {
   const mission = useOffice((s) => s.mission);
+  return mission ? (
+    <>
+      <PlanSection />
+      <TeamSection />
+      <FilesSection />
+      <FeedSection />
+    </>
+  ) : <Welcome />;
+}
+
+export function Panel() {
   return (
-    <aside className="panel">
-      {mission ? (
-        <>
-          <PlanSection />
-          <TeamSection />
-          <FilesSection />
-          <FeedSection />
-        </>
-      ) : <Welcome />}
+    <aside className="panel" aria-label="Aide, plan, équipe et rendus" tabIndex={0}>
+      <PanelContent />
     </aside>
   );
 }
@@ -47,6 +52,7 @@ function Welcome() {
   const dir = useOffice((s) => s.dir);
   const send = useOffice((s) => s.send);
   const connection = useOffice((s) => s.connection);
+  const toast = useOffice((s) => s.toast);
   return (
     <>
       <section className="card">
@@ -57,7 +63,7 @@ function Welcome() {
           <li><b>Tu les regardes bosser</b>, en vrai : chaque bulle, c’est ce que l’agent fait à cet instant.</li>
           <li><b>Ils te rendent le travail</b> : les fichiers arrivent dans « Les rendus » et dans ton dossier.</li>
         </ol>
-        <p className="small muted">Ce sont de vrais agents Claude Code, qui tournent avec ton abonnement.</p>
+        <p className="small muted">{IS_ARTIFACT ? 'Ce sont de vrais appels à Claude avec ton compte, sans fichiers ni commandes sur ton ordinateur.' : 'Ce sont de vrais agents Claude Code, qui tournent avec ton abonnement.'}</p>
       </section>
       <section className="card">
         <h3>Des idées de mission</h3>
@@ -68,10 +74,10 @@ function Welcome() {
       {connection === 'live' && (
         <section className="card">
           <h3>Ton bureau</h3>
-          <p className="small muted path">{tilde(dir)}</p>
+          {!IS_ARTIFACT && <p className="small muted path">{tilde(dir)}</p>}
           <div className="row">
-            <button className="btn small" onClick={() => send({ t: 'open_root' })}>Ouvrir le dossier</button>
-            <button className="btn small" onClick={() => send({ t: 'open_root', rules: true })}>Le règlement du bureau</button>
+            {!IS_ARTIFACT && <button className="btn small" onClick={() => { send({ t: 'open_root' }); toast('info', 'Dossier ouvert'); }}>Ouvrir le dossier</button>}
+            <button className="btn small" onClick={() => { send({ t: 'open_root', rules: true }); if (!IS_ARTIFACT) toast('info', 'Ouvert dans ton éditeur'); }}>Le règlement du bureau</button>
           </div>
           <p className="small muted">Le règlement, c’est ce que l’équipe doit savoir sur toi : Max le lit avant chaque mission.</p>
         </section>
@@ -84,7 +90,7 @@ function Welcome() {
               <div><b>{m.title}</b><span className="small muted">{fmtDate(m.createdAt)} · {fmtDuration(m.workMs)} · {m.files.length} rendu{m.files.length > 1 ? 's' : ''}</span></div>
               <div className="row">
                 <button className="btn small" onClick={() => { sfx('click'); send({ t: 'replay', missionId: m.id }); }}>Rejouer</button>
-                <button className="btn small ghost" onClick={() => send({ t: 'open', missionId: m.id })}>Dossier</button>
+                {!IS_ARTIFACT && <button className="btn small ghost" onClick={() => send({ t: 'open', missionId: m.id })}>Dossier</button>}
               </div>
             </div>
           ))}
@@ -186,8 +192,8 @@ function FilesSection() {
   return (
     <section className="card">
       <h3>Les rendus <span className="count">{files}</span></h3>
-      {files ? <FileList /> : <p className="small muted">Les fichiers de l’équipe arriveront ici (et dans le dossier de la mission).</p>}
-      {mission && !replaying && <button className="btn small ghost" onClick={() => send({ t: 'open', missionId: mission.id })}>Ouvrir le dossier de la mission</button>}
+      {files ? <FileList /> : <p className="small muted">Les fichiers de l’équipe arriveront ici{IS_ARTIFACT ? '.' : ' (et dans le dossier de la mission).'}</p>}
+      {mission && !replaying && !IS_ARTIFACT && <button className="btn small ghost" onClick={() => send({ t: 'open', missionId: mission.id })}>Ouvrir le dossier de la mission</button>}
     </section>
   );
 }

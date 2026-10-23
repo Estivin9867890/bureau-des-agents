@@ -11,6 +11,10 @@ import { Office } from './ui/Office.tsx';
 import { Panel } from './ui/Panel.tsx';
 import { Strips } from './ui/Strips.tsx';
 import { party } from './ui/interact.ts';
+import { ModalFrame, useTitleId, CloseButton } from './ui/Modal.tsx';
+import { PanelContent } from './ui/Panel.tsx';
+import { shortcutsOn } from './ui/prefs.ts';
+import { RulesEditor } from './net/RulesEditor.tsx';
 import { Rooms } from './ui/Rooms.tsx';
 import { startTour, stopTour } from './ui/tour.ts';
 import { TopBar } from './ui/TopBar.tsx';
@@ -43,9 +47,28 @@ function ExitFilming() {
   );
 }
 
+/** Sur téléphone (et en cadre vertical), le panneau de droite devient un tiroir « Aide ». */
+function HelpDrawer({ onClose }: { onClose: () => void }) {
+  const tid = useTitleId();
+  useEffect(() => {
+    const off = () => onClose();
+    window.addEventListener('bureau:escape', off);
+    return () => window.removeEventListener('bureau:escape', off);
+  }, [onClose]);
+  const draft = useOffice((s) => s.draft);
+  useEffect(() => { if (draft) onClose(); }, [draft, onClose]);
+  return (
+    <ModalFrame onClose={onClose} titleId={tid} className="modal drawer">
+      <div className="modal-head"><b id={tid}>Aide et mission</b><CloseButton onClick={onClose} /></div>
+      <div className="modal-body drawer-body"><PanelContent /></div>
+    </ModalFrame>
+  );
+}
+
 export function App() {
   const vertical = useOffice((s) => s.vertical || s.portrait);
   const filming = useOffice((s) => s.filming);
+  const [help, setHelp] = useState(false);
 
   // sur un écran en hauteur (téléphone), la mise en page verticale s'impose
   useEffect(() => {
@@ -57,14 +80,10 @@ export function App() {
   useEffect(() => {
     let combo: string[] = [];
     const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const s = useOffice.getState();
       const k = e.key.toLowerCase();
-      // le code secret (↑ ↑ ↓ ↓ ← → ← → B A) : le mode soirée
-      combo = [...combo, k].slice(-KONAMI.length);
-      if (combo.join() === KONAMI.join()) { combo = []; party(); return; }
+      // Échap ferme la fenêtre ouverte, même quand le focus est sur un champ ou une liste de la fenêtre
       if (k === 'escape') {
         if (s.tour) { stopTour(); return; }
         if (s.modal || s.viewer || s.historyOpen || s.settingsOpen || s.showFinal) {
@@ -72,8 +91,16 @@ export function App() {
           return;
         }
         if (s.filming) useOffice.setState({ filming: false });
+        window.dispatchEvent(new Event('bureau:escape'));
         return;
       }
+      // les raccourcis à une lettre : jamais dans un champ, et coupables dans les réglages (WCAG 2.1.4)
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (!shortcutsOn()) return;
+      // le code secret (↑ ↑ ↓ ↓ ← → ← → B A) : le mode soirée
+      combo = [...combo, k].slice(-KONAMI.length);
+      if (combo.join() === KONAMI.join()) { combo = []; party(); return; }
       if (k === 't') { if (s.tour) stopTour(); else void startTour(); return; }
       if (k === 'c') { useOffice.setState({ cameraAuto: !s.cameraAuto }); savePref('cameraAuto', !s.cameraAuto); sfx('click'); return; }
       if (k === 'j') { jukebox.toggle(); return; }
@@ -89,9 +116,10 @@ export function App() {
 
   return (
     <div className={`app ${vertical ? 'vertical' : ''} ${filming ? 'filming' : ''}`}>
+      <a className="skip" href="#mission-box" onClick={(e) => { e.preventDefault(); document.getElementById('mission-box')?.focus(); }}>Aller à la boîte de mission</a>
       <div className="frame">
-        <TopBar />
-        <div className="main">
+        <TopBar onHelp={() => setHelp(true)} />
+        <main className="main">
           <div className="stage">
             <Office />
             {vertical && <Strips />}
@@ -99,7 +127,7 @@ export function App() {
             <FinalCard />
           </div>
           {!vertical && !filming && <Panel />}
-        </div>
+        </main>
         <Dialog />
       </div>
       {filming && <ExitFilming />}
@@ -107,6 +135,8 @@ export function App() {
       <Rooms />
       <History />
       <SettingsPanel />
+      <RulesEditor />
+      {help && <HelpDrawer onClose={() => setHelp(false)} />}
       <Toasts />
     </div>
   );

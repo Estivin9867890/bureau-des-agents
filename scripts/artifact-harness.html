@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Harness : le Bureau des agents dans une fausse page parente</title>
+  <style>html,body{margin:0;height:100%;background:#111}iframe{border:0;width:100%;height:100%}</style>
+</head>
+<body>
+<!--
+  Fausse page parente (celle du Carnet de veille sur claude.ai), pour essayer le build artifact sans dépenser d'abonnement.
+  Lancer :   npm run build:artifact && python3 -m http.server 4950     (depuis la racine du dépôt)
+  Ouvrir :   http://localhost:4950/scripts/artifact-harness.html
+  Options (dans l'adresse) :
+    ?available=0        la page répond « pas de relais » : le bureau passe en démo
+    ?silent=1           la page ne répond jamais au bonjour (délai de 3 s, puis démo)
+    ?err=not_granted    le premier agent reçoit cette erreur (not_granted, rate_limited…)
+    ?errplan=rate_limited   le plan de Max reçoit cette erreur
+    ?slow=1             réponses lentes (pour essayer le bouton Arrêter)
+  Les messages vus par la page sont dans window.__log.
+-->
+<iframe id="f" src="../dist-artifact/index.html" title="Bureau des agents"></iframe>
+<script>
+const q = new URLSearchParams(location.search);
+const slow = q.get('slow') === '1';
+const frame = document.getElementById('f');
+window.__log = [];
+const running = new Map();
+
+const SITE = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Café Brume</title>
+<style>body{margin:0;font-family:Georgia,serif;background:#2b1b12;color:#f6e9d8;text-align:center}h1{font-size:3rem;margin:18vh 0 .5rem}p{opacity:.8}button{margin-top:1.5rem;padding:.8rem 1.6rem;border:0;border-radius:99px;background:#e8a35c;font-size:1rem}</style></head>
+<body><h1 id="t">Café Brume</h1><p>Le café en grains qui se lève tôt.</p><button onclick="document.getElementById('t').textContent='Merci !'">Je commande</button></body></html>`;
+
+function reply(input, opts) {
+  const last = Array.isArray(input) ? input[input.length - 1].content : input;
+  if (opts && opts.json) {
+    const plan = { message: 'Salut patron ! Je mets Iris sur le marché et Frida sur la page de lancement.', agents: [
+      { role: 'chercheur', nom: 'Iris', tache: 'Marché du café', brief: 'Décris le marché du café en grains en France.' },
+      { role: 'designer', nom: 'Frida', tache: 'Page de lancement', brief: 'Fais la page de lancement de Café Brume.' },
+    ] };
+    return { text: JSON.stringify(plan), value: plan };
+  }
+  if (last.includes('Tu es chercheur')) return { text: "*Rapport fait à partir des connaissances du modèle, sans recherche en direct : à vérifier avant de s'en servir.*\n\n# Le marché du café en grains\n\n## Les grandes marques\n- Lavazza : l'italien du supermarché.\n- Malongo : le commerce équitable.\n\n## Prix\nEntre 10 et 25 euros le kilo (estimation).\n" };
+  if (last.includes('Tu es designer')) return { text: "# Page de lancement\n\nJ'ai fait une page simple, sombre et chaleureuse.\n\n```html\n" + SITE + "\n```\n" };
+  if (last.includes('Assemble maintenant')) return { text: "# Café Brume : le dossier de lancement\n\nLe marché est dominé par deux grandes marques. Voir le détail dans les rapports.\n\n## Prochaines étapes\n1. Choisir le prix.\n2. Publier la page.\n\n---MESSAGE---\nLe dossier est prêt : rapport.md et index.html sont dans l'imprimante. Prochaine étape : choisir ton prix de vente." };
+  return { text: 'Fait ! J\'ai pris ta remarque en compte.' };
+}
+
+async function handle(d) {
+  const { id, input, opts } = d;
+  const ctl = { stop: false };
+  running.set(id, ctl);
+  const isPlan = opts && opts.json;
+  const err = isPlan ? q.get('errplan') : q.get('err');
+  const last = Array.isArray(input) ? '' : input;
+  const target = isPlan || (err && last.includes('Tu es chercheur'));
+  if (err && target) {
+    await new Promise((r) => setTimeout(r, 400));
+    if (!ctl.stop) frame.contentWindow.postMessage({ type: 'bureau-sample-error', id, code: err, message: 'simulé' }, '*');
+    return;
+  }
+  const { text, value } = reply(input, opts);
+  const step = 60;
+  for (let i = step; i < text.length && !ctl.stop; i += step) {
+    await new Promise((r) => setTimeout(r, slow ? 500 : 50));
+    if (ctl.stop) return;
+    frame.contentWindow.postMessage({ type: 'bureau-sample-text', id, text: text.slice(0, i) }, '*');
+  }
+  if (ctl.stop) return;
+  running.delete(id);
+  frame.contentWindow.postMessage({ type: 'bureau-sample-done', id, text, value }, '*');
+}
+
+window.addEventListener('message', (e) => {
+  if (e.source !== frame.contentWindow) return;
+  const d = e.data || {};
+  window.__log.push(d.type);
+  if (d.type === 'bureau-hello') {
+    if (q.get('silent') === '1') return;
+    frame.contentWindow.postMessage({ type: 'bureau-ready', available: q.get('available') !== '0' }, '*');
+  } else if (d.type === 'bureau-sample') handle(d);
+  else if (d.type === 'bureau-sample-abort') { const c = running.get(d.id); if (c) c.stop = true; running.delete(d.id); window.__aborted = (window.__aborted || 0) + 1; }
+});
+</script>
+</body>
+</html>

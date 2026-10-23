@@ -30,7 +30,7 @@ export function say(line: Line, force = false): Promise<void> {
   if (!force && now - lastAt < 2500) return Promise.resolve();
   lastAt = now;
   stopVoice();
-  const a = new Audio(`/voice/${line}.mp3`);
+  const a = new Audio(`${import.meta.env.BASE_URL}voice/${line}.mp3`);
   a.volume = 0.95;
   current = a;
   jukebox.duck(true);

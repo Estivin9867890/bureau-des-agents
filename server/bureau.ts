@@ -5,13 +5,15 @@
 // Une mission = une séance Claude Code lancée dans le dossier de la mission. On peut lui reparler
 // une fois finie (retouches) : la même séance reprend.
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
-import { appendFile, copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, copyFile, mkdir, open as openFile, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { countStats, emptyStats } from '../shared/activity.ts';
 import type { ClaudeInfo, FileInfo, Logged, MissionInfo, OfficeEvent, Quota, Role, ServerMsg, Settings, TeamEntry, VersionInfo } from '../shared/protocol.ts';
 import { ClaudeProcess, Normalizer, type ClaudeBinary, type TurnResult } from './claude.ts';
+import { openCommand, realInside, trimUtf8 } from './surete.ts';
 import { agentsJson, ALWAYS_ALLOWED, chefPrompt, SESSION_TOOLS } from './team.ts';
 
 const RULES_FILE = 'Règlement du bureau.md';
@@ -41,7 +43,7 @@ Le dossier caché « .bureau » garde l'état du bureau et l'enregistrement de c
 Tu peux le supprimer pour tout recommencer.
 `;
 
-const DEFAULT_SETTINGS: Settings = { chefModel: 'sonnet', teamModel: 'sonnet', permission: 'auto' };
+const DEFAULT_SETTINGS: Settings = { chefModel: 'sonnet', teamModel: 'sonnet', permission: 'ask' };
 const CHEF_MODELS = ['', 'sonnet', 'opus', 'haiku', 'fable'];
 const TEAM_MODELS = ['sonnet', 'haiku', 'opus', 'fable', 'inherit'];
 const IDLE_STOP_MS = 15 * 60 * 1000;
@@ -80,6 +82,9 @@ interface Current {
   lastChefText: string;
 }
 
+/** Un identifiant de mission imprévisible (les anciens, « m » + date en base 36, restent lisibles : on ne les valide pas). */
+export const newMissionId = () => 'm' + randomBytes(12).toString('hex');
+
 const pad = (n: number) => String(n).padStart(2, '0');
 
 /** Un titre court, tiré de la demande : « Analyse mes 5 concurrents et fais-moi… » → « Analyse mes 5 concurrents et fais-moi » */
@@ -108,6 +113,8 @@ export class Bureau {
   private state: State = { missions: [], settings: { ...DEFAULT_SETTINGS } };
   private saveTimer: NodeJS.Timeout | null = null;
   current: Current | null = null;
+  /** vrai pendant qu'une mission démarre (le dossier se crée) */
+  private starting = false;
   quota: Quota | null = null;
 
   private claude: ClaudeBinary | null;
@@ -126,6 +133,9 @@ export class Bureau {
   async init() {
     const fresh = !existsSync(this.dir);
     await mkdir(this.recDir, { recursive: true });
+    // le bureau est à toi seul : à la création, personne d'autre sur l'ordinateur n'y entre
+    if (fresh) await chmod(this.dir, 0o700).catch(() => {});
+    if (fresh) await chmod(path.join(this.dir, '.bureau'), 0o700).catch(() => {});
     await mkdir(this.missionsDir, { recursive: true });
     if (fresh) await writeFile(path.join(this.dir, 'LISEZ-MOI.md'), README);
     if (!existsSync(path.join(this.dir, RULES_FILE))) await writeFile(path.join(this.dir, RULES_FILE), RULES_TEMPLATE);
@@ -133,7 +143,12 @@ export class Bureau {
       try {
         const s = JSON.parse(await readFile(this.stateFile, 'utf8')) as Partial<State>;
         this.state = { missions: Array.isArray(s.missions) ? s.missions : [], settings: { ...DEFAULT_SETTINGS, ...(s.settings ?? {}) } };
-      } catch { /* état illisible : on repart proprement */ }
+      } catch {
+        // état illisible : on le garde de côté (rien ne se perd) avant de repartir à vide
+        const copy = `${this.stateFile}.corrompu-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+        await rename(this.stateFile, copy).catch(() => {});
+        console.error(`  ⚠  L’état du bureau était illisible : copie gardée dans ${path.basename(copy)}.`);
+      }
     }
     // une mission restée « au travail » (le bureau a été coupé pendant qu'elle tournait) est arrêtée
     for (const m of this.state.missions) if (m.status === 'working') m.status = 'stopped';
@@ -175,7 +190,15 @@ export class Bureau {
     const text = prompt.trim();
     if (!text) throw new Error('Dis à Max ce que tu veux.');
     if (!this.claude) throw new Error('Claude Code n’est pas installé sur cet ordinateur.');
-    if (this.current?.mission.status === 'working') throw new Error('L’équipe est déjà sur une mission. Attends qu’elle la rende, ou arrête-la.');
+    if (this.current?.mission.status === 'working' || this.starting) throw new Error('L’équipe est déjà sur une mission. Attends qu’elle la rende, ou arrête-la.');
+    // verrou posé avant le premier « await » : un second départ rapproché est refusé proprement
+    this.starting = true;
+    try {
+      await this.begin(text);
+    } finally { this.starting = false; }
+  }
+
+  private async begin(text: string) {
     if (this.current) this.close();
 
     const now = new Date();
@@ -186,7 +209,7 @@ export class Bureau {
     await mkdir(folder, { recursive: true });
 
     const mission: MissionInfo = {
-      id: 'm' + Date.now().toString(36), title, prompt: text, folder, createdAt: Date.now(), workMs: 0,
+      id: newMissionId(), title, prompt: text, folder, createdAt: Date.now(), workMs: 0,
       status: 'working', stats: emptyStats(), files: [],
     };
     this.state.missions.push(mission);
@@ -238,7 +261,7 @@ export class Bureau {
     });
     const proc: ClaudeProcess = new ClaudeProcess(
       {
-        bin: this.claude.path, cwd: cur.mission.folder, permissionMode: s.permission === 'ask' ? 'acceptEdits' : 'auto',
+        bin: this.claude.path, cwd: cur.mission.folder, permissionMode: s.permission === 'ask' ? 'default' : 'auto',
         model: s.chefModel || undefined, resume, tools: SESSION_TOOLS, allowedTools: ALWAYS_ALLOWED,
         agents: agentsJson(s), appendSystemPrompt: chefPrompt(readRules(this.dir)), useApiKey: process.env.BUREAU_USE_API_KEY === '1',
       },
@@ -359,6 +382,8 @@ export class Bureau {
   private async fileChanged(cur: Current, rel: string) {
     if (this.current !== cur) return;
     const abs = path.join(cur.mission.folder, rel);
+    // un lien symbolique qui sort du dossier n'est pas un rendu : on ne le suit pas (ni copie, ni version)
+    if (!(await realInside(cur.mission.folder, rel))) return;
     const st = await stat(abs).catch(() => null);
     if (!st || !st.isFile()) return;
     const files = cur.mission.files;
@@ -388,7 +413,7 @@ export class Bureau {
 
   /** Les versions d'un rendu, de la plus récente à la plus ancienne. */
   async versions(missionId: string, file: string): Promise<VersionInfo[]> {
-    this.inside(missionId, file);
+    await this.inside(missionId, file);
     const dir = path.join(this.verDir, missionId, versionDirName(file));
     const names = await readdir(dir).catch(() => [] as string[]);
     const out: VersionInfo[] = [];
@@ -402,11 +427,11 @@ export class Bureau {
   }
 
   /** Le chemin d'un fichier de la mission pour l'aperçu des sites (null s'il sort du dossier). */
-  previewPath(missionId: string, rel: string): string | null {
+  async previewPath(missionId: string, rel: string): Promise<string | null> {
     const m = this.mission(missionId);
     if (!m) return null;
-    const target = path.resolve(m.folder, rel);
-    if (!target.startsWith(m.folder + path.sep) || !existsSync(target)) return null;
+    const target = await realInside(m.folder, rel);
+    if (!target || target === (await realInside(m.folder, ''))) return null;
     return target;
   }
 
@@ -472,20 +497,24 @@ export class Bureau {
   }
 
   /** Le chemin d'un fichier de la mission (refusé s'il sort du dossier). */
-  private inside(missionId: string, file?: string) {
+  private async inside(missionId: string, file?: string) {
     const m = this.mission(missionId);
     if (!m) throw new Error('Cette mission n’existe plus.');
-    if (!file) return { m, target: m.folder };
-    const target = path.resolve(m.folder, file);
-    if (!target.startsWith(m.folder + path.sep) || !existsSync(target)) throw new Error('Ce fichier n’est pas dans le dossier de la mission.');
+    // le vrai chemin (liens symboliques résolus) doit rester dans le vrai dossier de la mission
+    const target = await realInside(m.folder, file ?? '');
+    if (!target || (file && target === (await realInside(m.folder, '')))) throw new Error('Ce fichier n’est pas dans le dossier de la mission.');
     return { m, target };
   }
 
-  /** Ouvre le dossier de la mission (ou un de ses fichiers) avec l'appli par défaut. */
-  open(missionId: string, file?: string) {
-    const { target } = this.inside(missionId, file);
-    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-    execFile(opener, [target], () => {});
+  /**
+   * Ouvre un fichier de la mission avec l'appli par défaut, mais seulement les types sûrs (pages, textes, images, PDF…) :
+   * le reste, et les dossiers, sont juste montrés dans le Finder. Jamais d'exécution d'un fichier produit par l'équipe.
+   */
+  async open(missionId: string, file?: string) {
+    const { target } = await this.inside(missionId, file);
+    const isDir = (await stat(target)).isDirectory();
+    const { cmd, args } = openCommand(target, isDir);
+    execFile(cmd, args, () => {});
   }
 
   /** Ouvre le dossier du bureau, ou son règlement (dans l'éditeur de texte par défaut). */
@@ -498,16 +527,24 @@ export class Bureau {
 
   /** Le texte d'un rendu (rapport, CSV…), pour le lire dans le bureau. */
   async readText(missionId: string, file: string, version?: string) {
-    let { target } = this.inside(missionId, file);
+    let { target } = await this.inside(missionId, file);
     if (version) {
       if (!/^\d+__[\w-]*(\.[\w-]+)?$/.test(version)) throw new Error('Version inconnue.');
       target = path.join(this.verDir, missionId, versionDirName(file), version);
       if (!existsSync(target)) throw new Error('Cette version n’existe plus.');
     }
-    const st = await stat(target);
+    // au plus 400 ko lus (le fichier peut peser des giga-octets), sans couper un caractère en deux
     const max = 400_000;
-    const buf = await readFile(target);
-    return { text: buf.subarray(0, max).toString('utf8'), truncated: st.size > max };
+    const fh = await openFile(target, 'r');
+    try {
+      const st = await fh.stat();
+      if (!st.isFile()) throw new Error('Ce n’est pas un fichier.');
+      const buf = Buffer.alloc(Math.min(st.size, max));
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      const truncated = st.size > max;
+      const part = buf.subarray(0, bytesRead);
+      return { text: (truncated ? trimUtf8(part) : part).toString('utf8'), truncated };
+    } finally { await fh.close(); }
   }
 
   /** L'enregistrement d'une mission, pour la rejouer (pratique pour filmer sans relancer l'équipe). */
@@ -540,12 +577,13 @@ export class Bureau {
   }
 
   /** Le pont s'arrête : tout le monde s'arrête tout de suite, et on sauvegarde. */
-  shutdown() {
+  shutdown(): Promise<void> {
     const cur = this.current;
+    let gone: Promise<void> = Promise.resolve();
     if (cur) {
       if (cur.mission.status === 'working') { cur.mission.status = 'stopped'; cur.mission.endedAt = Date.now(); if (cur.busySince) cur.mission.workMs += Date.now() - cur.busySince; }
       cur.watcher?.close();
-      if (cur.live) { cur.live.stopping = true; cur.live.proc.kill(); }
+      if (cur.live) { cur.live.stopping = true; gone = cur.live.proc.kill(); }
     }
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
     try {
@@ -553,5 +591,6 @@ export class Bureau {
       writeFileSync(tmp, JSON.stringify(this.state));
       renameSync(tmp, this.stateFile);
     } catch { /* tant pis : l'état de la dernière sauvegarde reste */ }
+    return gone;
   }
 }

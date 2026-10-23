@@ -6,12 +6,12 @@ import { useOffice } from '../state/store.ts';
 export interface Track { id: string; title: string; mood: string; by: string; file: string }
 
 export const TRACKS: Track[] = [
-  { id: 'coucher-de-soleil', title: 'Coucher de soleil', mood: 'House progressive mélodique', by: 'ElevenLabs', file: '/music/coucher-de-soleil.mp3' },
-  { id: 'nuit-au-bureau', title: 'Nuit au bureau', mood: 'Techno mélodique', by: 'ElevenLabs', file: '/music/nuit-au-bureau.mp3' },
-  { id: 'afterwork', title: 'Afterwork', mood: 'House progressive solaire', by: 'ElevenLabs', file: '/music/afterwork.mp3' },
-  { id: 'golden-hour', title: 'Golden hour', mood: 'House progressive', by: 'Lyria', file: '/music/golden-hour.mp3' },
-  { id: 'minuit-pile', title: 'Minuit pile', mood: 'Techno mélodique', by: 'Lyria', file: '/music/minuit-pile.mp3' },
-  { id: 'vendredi-18h', title: 'Vendredi 18 h', mood: 'House solaire', by: 'Lyria', file: '/music/vendredi-18h.mp3' },
+  { id: 'coucher-de-soleil', title: 'Coucher de soleil', mood: 'House progressive mélodique', by: 'ElevenLabs', file: `${import.meta.env.BASE_URL}music/coucher-de-soleil.mp3` },
+  { id: 'nuit-au-bureau', title: 'Nuit au bureau', mood: 'Techno mélodique', by: 'ElevenLabs', file: `${import.meta.env.BASE_URL}music/nuit-au-bureau.mp3` },
+  { id: 'afterwork', title: 'Afterwork', mood: 'House progressive solaire', by: 'ElevenLabs', file: `${import.meta.env.BASE_URL}music/afterwork.mp3` },
+  { id: 'golden-hour', title: 'Golden hour', mood: 'House progressive', by: 'Lyria', file: `${import.meta.env.BASE_URL}music/golden-hour.mp3` },
+  { id: 'minuit-pile', title: 'Minuit pile', mood: 'Techno mélodique', by: 'Lyria', file: `${import.meta.env.BASE_URL}music/minuit-pile.mp3` },
+  { id: 'vendredi-18h', title: 'Vendredi 18 h', mood: 'House solaire', by: 'Lyria', file: `${import.meta.env.BASE_URL}music/vendredi-18h.mp3` },
 ];
 
 class Jukebox {

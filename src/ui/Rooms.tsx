@@ -14,6 +14,20 @@ import { party } from './interact.ts';
 import { mdToHtml } from './md.ts';
 import { Avatar } from './Panel.tsx';
 import { tidy } from './tidy.ts';
+import { CloseButton, ModalFrame, useTitleId } from './Modal.tsx';
+import { IS_ARTIFACT } from '../net/mode.ts';
+import { fileText, previewDoc } from '../net/artifact-store.ts';
+
+/** Artifact : pas de dossier à ouvrir, on télécharge le fichier (Blob + lien « download »). */
+function downloadFile(missionId: string, path: string) {
+  const text = fileText(missionId, path);
+  if (text === null) { useOffice.getState().toast('error', 'Ce fichier n’est plus disponible.'); return; }
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = path.split('/').pop() || 'fichier.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 const ICON: Record<string, string> = {
   search: '🔎', web: '🌐', read: '📖', write: '✍️', edit: '✏️', bash: '💻', plan: '📋', skill: '🎓', mcp: '🔌', other: '⚙️',
@@ -21,16 +35,15 @@ const ICON: Record<string, string> = {
 
 function Shell({ title, sub, wide, children, onClose }: { title: React.ReactNode; sub?: React.ReactNode; wide?: boolean; children: React.ReactNode; onClose?: () => void }) {
   const close = onClose ?? (() => useOffice.setState({ modal: null }));
+  const tid = useTitleId();
   return (
-    <div className="modal-back" onClick={close}>
-      <div className={`modal room ${wide ? 'wide' : ''}`} onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <div className="room-title"><b>{title}</b>{sub && <span>{sub}</span>}</div>
-          <button className="close" onClick={close} aria-label="Fermer">×</button>
-        </div>
-        <div className="modal-body">{children}</div>
+    <ModalFrame onClose={close} titleId={tid} className={`modal room ${wide ? 'wide' : ''}`}>
+      <div className="modal-head">
+        <div className="room-title"><b id={tid}>{title}</b>{sub && <span>{sub}</span>}</div>
+        <CloseButton onClick={close} />
       </div>
-    </div>
+      <div className="modal-body">{children}</div>
+    </ModalFrame>
   );
 }
 
@@ -209,22 +222,23 @@ function MachineRoom() {
   const quota = useOffice((s) => s.quota);
   const dir = useOffice((s) => s.dir);
   const connection = useOffice((s) => s.connection);
-  const rows: [string, React.ReactNode][] = [
+  const allRows: [string, React.ReactNode][] = [
     ['Claude Code', claude?.found ? `${claude.version} · ${claude.path}` : connection === 'demo' ? 'Démo (rediffusion d’une vraie mission)' : 'introuvable'],
     ['Connexion', 'ton abonnement Claude (aucune clé API, aucune facturation à l’usage)'],
     ['Cerveau de Max', mission?.model ? `${mission.model} (réglage : ${settings.chefModel || 'par défaut'})` : settings.chefModel || 'par défaut'],
     ['Cerveau de l’équipe', settings.teamModel === 'inherit' ? 'le même que Max' : settings.teamModel],
-    ['Permissions', settings.permission === 'auto' ? 'automatiques : l’agent lève la main pour les gestes risqués' : 'demandées avant chaque commande'],
+    ['Permissions', settings.permission === 'auto' ? 'automatiques : l’agent agit sans demander, y compris commandes et lecture du web' : 'demandées avant chaque écriture de fichier ou commande'],
     ['Énergie (5 h)', quota ? `${Math.round(quota.fiveHour * 100)} % utilisés${quota.resetsAt ? `, rechargée à ${new Date(quota.resetsAt * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : ''}` : 'pas encore mesurée'],
     ['Dossier du bureau', dir ? tilde(dir) : '—'],
     ['Mission en cours', mission ? tilde(mission.folder) : 'aucune'],
   ];
+  const rows = allRows.filter(([k]) => !IS_ARTIFACT || !['Claude Code', 'Permissions', 'Dossier du bureau', 'Mission en cours'].includes(k));
   return (
     <Shell title="La machine" sub="Ce qui tourne derrière le bureau">
       <dl className="kv">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
       <section className="room-sec">
         <h4>Comment ça marche</h4>
-        <p className="small">Max est une vraie séance Claude Code, lancée sans fenêtre dans le dossier de la mission. Son équipe, ce sont de vrais sous-agents Claude Code, chacun avec ses consignes et seulement les outils de son métier. Chaque fois qu’un agent utilise un outil (une recherche, une page lue, un fichier écrit), Claude Code le raconte au bureau, qui le montre aussitôt : un robot qui tape, une bulle, un rapport posé sur le bureau du chef.</p>
+        {IS_ARTIFACT ? <p className="small">Max et son équipe sont de vrais appels à Claude, avec ton compte, depuis le Carnet de veille. Ils écrivent leurs rapports et leurs pages dans la mémoire de ton navigateur : aucun fichier, aucune commande sur ton ordinateur.</p> : <p className="small">Max est une vraie séance Claude Code, lancée sans fenêtre dans le dossier de la mission. Son équipe, ce sont de vrais sous-agents Claude Code, chacun avec ses consignes et seulement les outils de son métier. Chaque fois qu’un agent utilise un outil (une recherche, une page lue, un fichier écrit), Claude Code le raconte au bureau, qui le montre aussitôt : un robot qui tape, une bulle, un rapport posé sur le bureau du chef.</p>}
         <p className="small muted">Mode restreint : l’équipe ne sort jamais du dossier de la mission, et ni tes réglages ni tes autres agents ne s’invitent dans le bureau.</p>
       </section>
     </Shell>
@@ -384,7 +398,9 @@ export function FileActions({ files, missionId, disabled, send }: { files: Retur
           {!disabled && readable(f.ext) && (
             <button className="btn small" onClick={() => { sfx('open'); useOffice.setState({ modal: null, viewer: { missionId, file: f.path } }); send({ t: 'read', missionId, file: f.path }); send({ t: 'versions', missionId, file: f.path }); }}>Lire</button>
           )}
-          {!disabled && <button className="btn small ghost" onClick={() => send({ t: 'open', missionId, file: f.path })}>Ouvrir</button>}
+          {!disabled && (IS_ARTIFACT
+            ? <button className="btn small ghost" onClick={() => downloadFile(missionId, f.path)}>Télécharger</button>
+            : <button className="btn small ghost" onClick={() => send({ t: 'open', missionId, file: f.path })}>Ouvrir</button>)}
         </div>
       ))}
     </div>
@@ -397,26 +413,29 @@ function PreviewRoom({ missionId, file }: { missionId: string; file: string }) {
   const [nonce, setNonce] = useState(0);
   const send = useOffice((s) => s.send);
   const src = `/apercu/${encodeURIComponent(missionId)}/${file.split('/').map(encodeURIComponent).join('/')}`;
+  // artifact : le site vit dans la mémoire du navigateur, il s'affiche en srcDoc (jamais allow-same-origin)
+  const frameSrc = IS_ARTIFACT ? { srcDoc: previewDoc(missionId, file) ?? '<p style="font-family:sans-serif">Ce site n’est plus disponible.</p>' } : { src };
   const close = () => useOffice.setState({ modal: null });
+  const tid = useTitleId();
   return (
-    <div className="modal-back" onClick={close}>
-      <div className="monitor" onClick={(e) => e.stopPropagation()}>
+    <ModalFrame onClose={close} titleId={tid} className="monitor">
         <div className="monitor-bar">
-          <span className="dots"><i /><i /><i /></span>
-          <span className="addr">🔒 {file}</span>
+          <span className="dots" aria-hidden="true"><i /><i /><i /></span>
+          <span className="addr" id={tid}>🔒 {file}</span>
           <div className="seg small">
             <button className={device === 'desktop' ? 'on' : ''} onClick={() => setDevice('desktop')}>💻 Ordinateur</button>
             <button className={device === 'phone' ? 'on' : ''} onClick={() => setDevice('phone')}>📱 Téléphone</button>
           </div>
           <button className="btn small" onClick={() => setNonce((n) => n + 1)} title="Recharger">↻</button>
           <button className="btn small" title="Le code de la page, et ses versions successives" onClick={() => { useOffice.setState({ modal: null, viewer: { missionId, file } }); send({ t: 'read', missionId, file }); send({ t: 'versions', missionId, file }); }}>&lt;/&gt; Code et versions</button>
-          <button className="btn small" onClick={() => send({ t: 'open', missionId, file })}>Ouvrir dans le navigateur</button>
-          <button className="close" onClick={close} aria-label="Fermer">×</button>
+          {IS_ARTIFACT
+            ? <button className="btn small" onClick={() => downloadFile(missionId, file)}>Télécharger</button>
+            : <button className="btn small" onClick={() => send({ t: 'open', missionId, file })}>Ouvrir dans le navigateur</button>}
+          <CloseButton onClick={close} />
         </div>
         <div className={`monitor-screen ${device}`}>
-          <iframe key={nonce} title={file} src={src} sandbox="allow-scripts allow-forms allow-popups allow-modals" referrerPolicy="no-referrer" />
+          <iframe key={nonce} title={file} {...frameSrc} sandbox="allow-scripts allow-forms allow-popups allow-modals" referrerPolicy="no-referrer" />
         </div>
-      </div>
-    </div>
+    </ModalFrame>
   );
 }

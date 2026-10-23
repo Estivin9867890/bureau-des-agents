@@ -9,6 +9,7 @@ import { robotSprite } from '../engine/robots.ts';
 import { useOffice } from '../state/store.ts';
 import { tidy } from './tidy.ts';
 import { dictationHelp, useDictation } from './voice.ts';
+import { useReducedMotion } from './prefs.ts';
 
 export const EXAMPLES: { label: string; prompt: string }[] = [
   {
@@ -36,12 +37,14 @@ const stripMd = (s: string) =>
 /** Le texte de Max, qui s'écrit lettre par lettre, avec un petit « bip » (comme dans les vieux jeux). */
 function useTypewriter(text: string, cps = 55) {
   const [n, setN] = useState(0);
+  const calm = useReducedMotion();
   const shown = useRef('');
   useEffect(() => {
     // si le nouveau texte prolonge celui qui s'affiche, on continue ; sinon on recommence
     if (!text.startsWith(shown.current)) setN(0);
   }, [text]);
   useEffect(() => {
+    if (calm) { setN(text.length); return; }
     if (n >= text.length) return;
     const t = setTimeout(() => {
       const step = text.length - n > 260 ? 8 : 2;
@@ -49,8 +52,8 @@ function useTypewriter(text: string, cps = 55) {
       if (n % 6 === 0) sfx('blip', 0.85 + Math.random() * 0.3);
     }, (1000 / cps) * 2);
     return () => clearTimeout(t);
-  }, [n, text, cps]);
-  const out = text.slice(0, Math.min(n, text.length));
+  }, [n, text, cps, calm]);
+  const out = calm ? text : text.slice(0, Math.min(n, text.length));
   shown.current = out;
   return { out, done: n >= text.length };
 }
@@ -77,6 +80,13 @@ function Portrait({ happy }: { happy: boolean }) {
   return <canvas ref={ref} width={64} height={64} className="portrait" />;
 }
 
+/** Le texte annoncé aux lecteurs d'écran : on attend que Max ait fini sa phrase (sinon chaque lettre serait lue). */
+function useDebounced(v: string, ms: number) {
+  const [d, setD] = useState(v);
+  useEffect(() => { const t = setTimeout(() => setD(v), ms); return () => clearTimeout(t); }, [v, ms]);
+  return d;
+}
+
 export function Dialog() {
   const connection = useOffice((s) => s.connection);
   const claude = useOffice((s) => s.claude);
@@ -101,17 +111,19 @@ export function Dialog() {
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => { if (box.current) box.current.scrollTop = box.current.scrollHeight; }, [out]);
 
+  const spoken = useDebounced(text, 1400);
   return (
-    <footer className="dialog">
+    <section className="dialog" aria-label="Parler à Max">
       <div className="dialog-box">
         <div className="dialog-face"><Portrait happy={!!final?.ok && !busy} /></div>
         <div className="dialog-main">
           <div className="dialog-name">Max <span>chef de projet</span>{replaying && <em className="pill replay">Rediffusion</em>}</div>
-          <div className="dialog-text" ref={box}>{out}<span className="caret" /></div>
+          <div className="dialog-text" ref={box} aria-hidden="true">{out}<span className="caret" /></div>
+          <p className="sr-only" aria-live="polite" aria-atomic="true">{spoken ? `Max : ${spoken}` : ''}</p>
         </div>
       </div>
       <Composer />
-    </footer>
+    </section>
   );
 }
 
@@ -179,6 +191,8 @@ function Composer() {
     <div className="composer">
       <div className={`composer-row ${dict.listening ? 'listening' : ''}`}>
         <textarea
+          id="mission-box"
+          aria-label={mode === 'new' ? 'Ta demande pour Max' : 'Ton message pour Max'}
           ref={area}
           value={text}
           rows={2}
@@ -192,7 +206,8 @@ function Composer() {
         <button
           className={`mic ${dict.listening ? 'on' : ''}`}
           title={dict.listening ? 'Arrêter la dictée' : 'Dicter (en français)'}
-          aria-label="Dicter"
+          aria-label={dict.listening ? 'Arrêter la dictée' : 'Dicter (en français)'}
+          aria-pressed={dict.listening}
           disabled={replaying}
           onClick={() => (dict.listening ? dict.stop() : dict.start())}
         >
@@ -209,11 +224,11 @@ function Composer() {
           </button>
         )}
         {mode === 'retouch' && !replaying && (
-          <button className="btn ghost" title="Range cette mission et repars de zéro" onClick={() => { sfx('click'); send({ t: 'new' }); }}>＋ Nouvelle mission</button>
+          <button className="btn ghost newm" title="Range cette mission et repars de zéro" onClick={() => { sfx('click'); send({ t: 'new' }); }}>＋ Nouvelle mission</button>
         )}
       </div>
       {dict.problem && (
-        <div className="hint" onClick={dict.clearProblem}>🎙️ {dictationHelp(dict.problem)}</div>
+        <div className="hint" role="status" onClick={dict.clearProblem}>🎙️ {dictationHelp(dict.problem)}</div>
       )}
     </div>
   );

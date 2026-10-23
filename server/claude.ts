@@ -12,20 +12,23 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { describeAct, NAMES, permissionText, roleOfType, ROLES, cut } from '../shared/activity.ts';
 import type { OfficeEvent, PlanItem, Quota, Role } from '../shared/protocol.ts';
+import { claudeNames, launchSpec, safeEnv } from './surete.ts';
 
 export interface ClaudeBinary { path: string; version: string }
 
 function run(file: string, args: string[]): Promise<string> {
+  // un « .cmd » ne se lance que par cmd.exe : ici les arguments sont fixes (--version), donc sans risque
+  const shell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(file);
   return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout: 15000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    execFile(file, args, { timeout: 15000, shell }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
   });
 }
 
 /** Trouve l'exécutable `claude` (sans passer par les alias du terminal). */
 export async function findClaude(): Promise<ClaudeBinary | null> {
   const home = os.homedir();
-  const fromPath = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).map((d) => path.join(d, 'claude'));
-  const candidates = [process.env.CLAUDE_BIN, ...fromPath, path.join(home, '.local/bin/claude'), path.join(home, '.claude/local/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'];
+  const fromPath = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).flatMap((d) => claudeNames().map((n) => path.join(d, n)));
+  const candidates = [process.env.CLAUDE_BIN, ...fromPath, ...claudeNames().map((n) => path.join(home, '.local/bin', n)), path.join(home, '.claude/local/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'];
   for (const c of new Set(candidates.filter((x): x is string => !!x))) {
     if (!existsSync(c)) continue;
     try {
@@ -60,6 +63,8 @@ export class ClaudeProcess {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private stderr = '';
   private exited = false;
+  /** les lignes de sortie qui n'étaient pas du JSON (pour les repérer en mode debug) */
+  badLines = 0;
 
   private opts: ProcessOptions;
   private onMessage: (m: Json) => void;
@@ -87,8 +92,9 @@ export class ClaudeProcess {
     if (o.allowedTools.length) args.push('--allowedTools', o.allowedTools.join(','));
     // pas de questions à choix multiples : le chef pose ses questions dans la conversation
     args.push('--disallowedTools', 'AskUserQuestion');
+    // seulement ce dont claude a besoin : ni les clés ni les jetons de ton terminal ne lui sont transmis
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...safeEnv(process.env),
       BUREAU_DES_AGENTS: '1',
       // seule l'équipe du bureau peut être appelée (pas les agents génériques de Claude Code)
       CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1',
@@ -98,12 +104,17 @@ export class ClaudeProcess {
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
     };
     if (!o.useApiKey) { delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; }
-    const p = spawn(o.bin, args, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const launch = launchSpec(o.bin, args);
+    const p = spawn(launch.cmd, launch.args, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.proc = p;
     readline.createInterface({ input: p.stdout }).on('line', (line) => {
       if (!line.trim()) return;
       let m: Json;
-      try { m = JSON.parse(line); } catch { return; }
+      try { m = JSON.parse(line); } catch {
+        this.badLines++;
+        if (process.env.BUREAU_DEBUG) console.error(`  ⚠  Ligne illisible de Claude Code (${this.badLines} au total) : ${line.slice(0, 120)}`);
+        return;
+      }
       this.onMessage(m);
     });
     p.stderr.on('data', (b: Buffer) => { this.stderr = (this.stderr + b.toString()).slice(-4000); });
@@ -152,12 +163,21 @@ export class ClaudeProcess {
     if (!this.alive) return;
     this.proc!.stdin.end();
     const p = this.proc!;
-    setTimeout(() => { if (!this.exited) p.kill('SIGTERM'); }, 5000);
+    setTimeout(() => { if (!this.exited) { p.kill('SIGTERM'); this.killLater(p); } }, 5000);
   }
 
-  /** Arrêt immédiat (quand le pont s'arrête). */
-  kill() {
-    if (this.alive) this.proc!.kill('SIGTERM');
+  /** Arrêt immédiat (quand le pont s'arrête) : SIGTERM, puis SIGKILL s'il est encore là 2 s après. Résolu quand il est parti. */
+  kill(): Promise<void> {
+    const p = this.proc;
+    if (!p || !this.alive) return Promise.resolve();
+    const gone = new Promise<void>((resolve) => { p.once('close', () => resolve()); p.once('error', () => resolve()); });
+    p.kill('SIGTERM');
+    this.killLater(p);
+    return gone;
+  }
+
+  private killLater(p: ChildProcessWithoutNullStreams) {
+    setTimeout(() => { if (!this.exited) p.kill('SIGKILL'); }, 2000).unref();
   }
 }
 

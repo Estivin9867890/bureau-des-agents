@@ -2,6 +2,7 @@
 // le bureau passe en démo : il rejoue une vraie mission enregistrée.
 import type { ClientMsg, Logged, MissionInfo, ServerMsg } from '../../shared/protocol.ts';
 import { useOffice } from '../state/store.ts';
+import { IS_ARTIFACT } from './mode.ts';
 
 let ws: WebSocket | null = null;
 let everConnected = false;
@@ -10,14 +11,48 @@ let player: { stop: () => void } | null = null;
 let lastReplay: { mission: MissionInfo; log: Logged[] } | null = null;
 let build = '';
 
+/** Le jeton de session glissé par le serveur dans la page (vide en développement : le serveur n'en exige pas). */
+let token = document.querySelector<HTMLMetaElement>('meta[name="bureau-token"]')?.content ?? '';
+/** Après un redémarrage du serveur, l'ancien jeton ne vaut plus : on relit la page pour avoir le nouveau. */
+async function refreshToken() {
+  try {
+    const html = await (await fetch('/', { cache: 'no-store' })).text();
+    const m = /<meta name="bureau-token" content="([0-9a-f]*)"/.exec(html);
+    if (m) token = m[1];
+  } catch { /* serveur éteint : on réessaiera */ }
+}
+
 export function sendToBridge(m: ClientMsg) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
   else useOffice.getState().toast('error', 'Le bureau n’est pas relié à Claude Code : lance « npm start » dans le dossier du bureau.');
 }
 
+/** Dans la page claude.ai (artifact) : pas de serveur. On salue la page parente ; si elle relaie Claude, le pont prend le relais. */
+export const ARTIFACT_DEMO_TEXT = 'Ouvre ce bureau depuis le Carnet de veille sur claude.ai pour lancer de vraies missions.';
+
+async function connectArtifact() {
+  useOffice.setState({ connection: 'connecting' });
+  const bridge = await import('./artifact-bridge.ts');
+  const ok = window.parent !== window && (await bridge.handshake(3000));
+  if (ok) {
+    artifactRestore = bridge.restoreLive;
+    bridge.startBridge({ playReplay });
+  } else {
+    useOffice.setState({ connection: 'offline' });
+    await startDemo();
+    useOffice.getState().toast('info', ARTIFACT_DEMO_TEXT);
+  }
+}
+let artifactRestore: (() => void) | null = null;
+
 export function connect() {
+  if (IS_ARTIFACT) { void connectArtifact(); return; }
+  void (retry > 0 ? refreshToken() : Promise.resolve()).then(openSocket);
+}
+
+function openSocket() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const socket = new WebSocket(`${proto}://${location.host}/ws`);
+  const socket = new WebSocket(`${proto}://${location.host}/ws${token ? `?t=${encodeURIComponent(token)}` : ''}`);
   ws = socket;
   const failTimer = setTimeout(() => { if (!everConnected) socket.close(); }, 2500);
   socket.onopen = () => {
@@ -96,7 +131,8 @@ export function stopReplay() {
   player?.stop();
   player = null;
   useOffice.setState({ replaying: false });
-  if (ws?.readyState === WebSocket.OPEN) {
+  if (artifactRestore) artifactRestore();
+  else if (ws?.readyState === WebSocket.OPEN) {
     // on redemande l'état du bureau : le plus simple est de se reconnecter
     ws.close();
   } else useOffice.getState().resetMission(null);
@@ -105,12 +141,12 @@ export function stopReplay() {
 /** Sans pont : la démo rejoue en boucle une vraie mission enregistrée. */
 async function startDemo() {
   try {
-    const res = await fetch('/demo/mission.json');
+    const res = await fetch(`${import.meta.env.BASE_URL}demo/mission.json`);
     if (!res.ok) return;
     const data = (await res.json()) as { mission: MissionInfo; log: Logged[] };
     useOffice.setState({
       connection: 'demo',
-      send: () => useOffice.getState().toast('info', 'C’est une démo : installe le Bureau des agents pour lancer ta propre équipe.'),
+      send: () => useOffice.getState().toast('info', IS_ARTIFACT ? ARTIFACT_DEMO_TEXT : 'C’est une démo : installe le Bureau des agents pour lancer ta propre équipe.'),
     });
     playReplay(data.mission, data.log, 1, { loop: true });
   } catch { /* pas de démo disponible */ }

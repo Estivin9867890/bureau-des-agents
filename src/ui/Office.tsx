@@ -9,7 +9,9 @@ import { jukebox } from '../audio/music.ts';
 import { interact } from './interact.ts';
 import { H, W } from '../engine/layout.ts';
 import { sfx } from '../audio/sfx.ts';
+import { useShallow } from 'zustand/react/shallow';
 import { useOffice, type AskView } from '../state/store.ts';
+import { reducedMotion } from './prefs.ts';
 
 const ICON: Record<ActKind, string> = {
   search: '🔎', web: '🌐', read: '📖', write: '✍️', edit: '✏️', bash: '💻', plan: '📋', skill: '🎓', mcp: '🔌', other: '⚙️',
@@ -54,6 +56,7 @@ export function Office() {
   const [scale, setScale] = useState(2);
   const tod = useOffice((s) => s.tod);
   const vertical = useOffice((s) => s.vertical || s.portrait);
+  const sceneLabel = useSceneLabel();
   const todRef = useRef(tod);
   todRef.current = tod;
   const scaleRef = useRef(scale);
@@ -110,14 +113,17 @@ export function Office() {
       // la caméra : le réalisateur filme tout seul en mode tournage (sauf pendant la visite guidée)
       director.enabled = st.filming && st.cameraAuto && !st.tour;
       director.tick();
-      const camMoving = camera.update(dt);
+      // moins d'animations demandé : la caméra saute directement au plan, et le dessin se rafraîchit rarement
+      const calm = reducedMotion();
+      if (calm) { camera.x = camera.tx; camera.y = camera.ty; camera.zoom = camera.tzoom; }
+      const camMoving = calm ? false : camera.update(dt);
       // pour filmer le bureau image par image (scripts de capture) : chaque image est dessinée, et le rythme
       // de la musique vient du film, pas du jukebox
       const cap = (window as unknown as { __CAPTURE?: { music?: () => { on: boolean; level: number; beat: boolean } } }).__CAPTURE;
       const m = cap?.music?.();
       const level = m ? m.level : jukebox.sample();
       world.setMusic(m ? m.on : jukebox.playing, level, m ? m.beat : jukebox.beat);
-      if (!cap && acc < (active || camMoving ? 1 / 24 : 1 / 8)) return;
+      if (!cap && acc < (calm ? 1 / 3 : active || camMoving ? 1 / 24 : 1 / 8)) return;
       const t0 = performance.now();
       active = world.update(acc);
       acc = 0;
@@ -178,13 +184,53 @@ export function Office() {
     <div className="office" ref={wrap} onPointerMove={onMove} onPointerLeave={onLeave} onClick={onClick} onWheel={onWheel} onDoubleClick={() => camera.wide(4)}>
       <div className="office-frame" style={{ width: W * scale, height: H * scale }}>
         <div className="office-stage" ref={stage} style={{ width: W * scale, height: H * scale, ['--s' as string]: scale }}>
-          <canvas ref={canvas} className="office-canvas" style={{ width: W * scale, height: H * scale }} />
+          <canvas ref={canvas} className="office-canvas" role="img" aria-label={sceneLabel} style={{ width: W * scale, height: H * scale }} />
           <Bubbles />
         </div>
         <LiveBadge />
       </div>
-      <div className="office-tip" ref={tip} />
+      <div className="office-tip" ref={tip} aria-hidden="true" />
+      <SceneNav />
     </div>
+  );
+}
+
+/** « Bureau : Max et 3 agents au travail » : ce que montre l'image, pour qui ne la voit pas. */
+function useSceneLabel() {
+  const agents = useOffice((s) => s.agents);
+  const order = useOffice((s) => s.order);
+  const busy = useOffice((s) => s.busySince !== null);
+  const working = order.filter((k) => agents[k]?.status === 'working' || agents[k]?.status === 'reporting').length;
+  if (!order.length) return 'Bureau en pixel art : Max, le chef de projet, attend ta demande. Pixel, le chat, dort sur le canapé.';
+  const n = (k: number) => `${k} agent${k > 1 ? 's' : ''}`;
+  return working
+    ? `Bureau : Max et ${n(working)} au travail${order.length > working ? `, ${order.length - working} de plus ont fini` : ''}`
+    : busy ? `Bureau : Max et ${n(order.length)}, en train de se coordonner` : `Bureau : Max et ${n(order.length)}, la mission est au repos`;
+}
+
+/** Le clavier pour le bureau : une liste de boutons (cachée, elle apparaît dès qu'on y met le focus). */
+const OBJECTS: { id: string; label: string }[] = [
+  { id: 'board', label: 'Le tableau : le plan de Max' },
+  { id: 'rack', label: 'Le serveur' },
+  { id: 'printer', label: 'L’imprimante : les rendus' },
+  { id: 'shelf', label: 'Les archives : missions passées' },
+  { id: 'door', label: 'La porte : l’équipe' },
+  { id: 'jukebox', label: 'Le jukebox' },
+  { id: 'clock', label: 'L’horloge' },
+  { id: 'window', label: 'La fenêtre : jour, soir ou nuit' },
+];
+
+function SceneNav() {
+  const order = useOffice(useShallow((s) => s.order));
+  const agents = useOffice((s) => s.agents);
+  return (
+    <nav className="scene-nav" aria-label="Les personnages et les objets du bureau" onClick={(e) => e.stopPropagation()}>
+      <button onClick={() => interact({ kind: 'actor', id: 'chef', label: 'Max' })}>Max</button>
+      {order.map((id) => agents[id] && (
+        <button key={id} onClick={() => interact({ kind: 'actor', id, label: agents[id].name })}>{agents[id].name}</button>
+      ))}
+      {OBJECTS.map((o) => <button key={o.id} onClick={() => interact({ kind: 'object', id: o.id, label: o.label })}>{o.label}</button>)}
+    </nav>
   );
 }
 

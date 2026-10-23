@@ -8,6 +8,9 @@ import { FileList } from './Panel.tsx';
 import { fmtDate, fmtDuration, plural, tilde } from './format.ts';
 import { mdToHtml } from './md.ts';
 import { tidy } from './tidy.ts';
+import { CloseButton, ModalFrame, useTitleId } from './Modal.tsx';
+import { IS_ARTIFACT } from '../net/mode.ts';
+import { setShortcuts, useShortcuts } from './prefs.ts';
 
 /** La mission est rendue : Max te présente le travail de l'équipe. */
 export function FinalCard() {
@@ -24,7 +27,7 @@ export function FinalCard() {
   const close = () => useOffice.setState({ showFinal: false });
   return (
     <div className="final" role="dialog" aria-label="Le rendu de la mission">
-      <button className="close" onClick={close} aria-label="Fermer">×</button>
+      <CloseButton onClick={close} />
       <div className="final-head">
         <span className="final-badge"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
         <div>
@@ -42,7 +45,7 @@ export function FinalCard() {
       {files > 0 && <FileList />}
       {!replaying && (
         <div className="final-actions">
-          <button className="btn" onClick={() => send({ t: 'open', missionId: mission.id })}>Ouvrir le dossier</button>
+          {!IS_ARTIFACT && <button className="btn" onClick={() => send({ t: 'open', missionId: mission.id })}>Ouvrir le dossier</button>}
           <button className="btn" onClick={() => { close(); useOffice.setState({ draft: ' ' }); }}>Demander une retouche</button>
           <button className="btn primary" onClick={() => { sfx('click'); close(); send({ t: 'new' }); }}>Nouvelle mission</button>
         </div>
@@ -70,13 +73,13 @@ export function Viewer() {
     }
     return '';
   }, [viewer]);
+  const tid = useTitleId();
   if (!viewer) return null;
   const close = () => useOffice.setState({ viewer: null });
   return (
-    <div className="modal-back" onClick={close}>
-      <div className="modal viewer" onClick={(e) => e.stopPropagation()}>
+    <ModalFrame onClose={close} titleId={tid} className="modal viewer">
         <div className="modal-head">
-          <b>{viewer.file}</b>
+          <b id={tid}>{viewer.file}</b>
           <div className="row">
             {versions && versions.length > 1 && (
               <select
@@ -97,8 +100,8 @@ export function Viewer() {
                 ))}
               </select>
             )}
-            <button className="btn small" onClick={() => send({ t: 'open', missionId: viewer.missionId, file: viewer.file })}>Ouvrir avec l’appli</button>
-            <button className="close" onClick={close} aria-label="Fermer">×</button>
+            {!IS_ARTIFACT && <button className="btn small" onClick={() => send({ t: 'open', missionId: viewer.missionId, file: viewer.file })}>Ouvrir avec l’appli</button>}
+            <CloseButton onClick={close} />
           </div>
         </div>
         <div className="modal-body">
@@ -107,8 +110,7 @@ export function Viewer() {
               : <pre className="plain">{viewer.text}</pre>}
           {viewer.truncated && <p className="small muted">(Fichier long : seul le début est affiché.)</p>}
         </div>
-      </div>
-    </div>
+    </ModalFrame>
   );
 }
 
@@ -118,12 +120,12 @@ export function History() {
   const missions = useOffice((s) => s.missions);
   const send = useOffice((s) => s.send);
   const connection = useOffice((s) => s.connection);
+  const tid = useTitleId();
   if (!open) return null;
   const close = () => useOffice.setState({ historyOpen: false });
   return (
-    <div className="modal-back" onClick={close}>
-      <div className="modal history" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head"><b>Missions précédentes</b><button className="close" onClick={close} aria-label="Fermer">×</button></div>
+    <ModalFrame onClose={close} titleId={tid} className="modal history">
+        <div className="modal-head"><b id={tid}>Missions précédentes</b><CloseButton onClick={close} /></div>
         <div className="modal-body">
           {connection !== 'live' && <p className="muted">Relie le bureau à Claude Code (npm start) pour retrouver tes missions.</p>}
           {connection === 'live' && !missions.length && <p className="muted">Aucune mission pour l’instant. La première t’attend en bas de l’écran.</p>}
@@ -138,13 +140,12 @@ export function History() {
               </div>
               <div className="row">
                 <button className="btn small" title="Rejoue la mission (sans relancer l’équipe) : parfait pour filmer" onClick={() => { sfx('click'); close(); send({ t: 'replay', missionId: m.id }); }}>▶ Rejouer</button>
-                <button className="btn small ghost" onClick={() => send({ t: 'open', missionId: m.id })}>Dossier</button>
+                {!IS_ARTIFACT && <button className="btn small ghost" onClick={() => send({ t: 'open', missionId: m.id })}>Dossier</button>}
               </div>
             </div>
           ))}
         </div>
-      </div>
-    </div>
+    </ModalFrame>
   );
 }
 
@@ -159,13 +160,15 @@ export function SettingsPanel() {
   const dir = useOffice((s) => s.dir);
   const voiceOn = useOffice((s) => s.voiceOn);
   const cameraAuto = useOffice((s) => s.cameraAuto);
+  const shortcuts = useShortcuts();
+  const tid = useTitleId();
   if (!open) return null;
   const close = () => useOffice.setState({ settingsOpen: false });
   return (
-    <div className="modal-back" onClick={close}>
-      <div className="modal settings" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head"><b>Réglages du bureau</b><button className="close" onClick={close} aria-label="Fermer">×</button></div>
+    <ModalFrame onClose={close} titleId={tid} className="modal settings">
+        <div className="modal-head"><b id={tid}>Réglages du bureau</b><CloseButton onClick={close} /></div>
         <div className="modal-body">
+          {!IS_ARTIFACT && <>
           <label className="field">
             <span>Le cerveau de Max (le chef)</span>
             <select value={settings.chefModel} onChange={(e) => send({ t: 'settings', settings: { chefModel: e.target.value } })}>
@@ -180,16 +183,21 @@ export function SettingsPanel() {
           </label>
           <div className="field">
             <span>Les permissions</span>
-            <label className="radio"><input type="radio" checked={settings.permission === 'auto'} onChange={() => send({ t: 'settings', settings: { permission: 'auto' } })} /> L’équipe décide seule, et lève la main pour les gestes risqués</label>
-            <label className="radio"><input type="radio" checked={settings.permission === 'ask'} onChange={() => send({ t: 'settings', settings: { permission: 'ask' } })} /> Elle demande avant chaque commande</label>
+            <label className="radio"><input type="radio" checked={settings.permission === 'auto'} onChange={() => send({ t: 'settings', settings: { permission: 'auto' } })} /> Automatique : l’équipe agit sans demander, y compris les commandes et la lecture du web</label>
+            <label className="radio"><input type="radio" checked={settings.permission === 'ask'} onChange={() => send({ t: 'settings', settings: { permission: 'ask' } })} /> Elle demande avant chaque écriture de fichier ou commande</label>
           </div>
+          </>}
           <div className="field">
             <span>Le spectacle</span>
             <label className="radio"><input type="checkbox" checked={voiceOn} onChange={(e) => { useOffice.setState({ voiceOn: e.target.checked }); savePref('voice', e.target.checked); applySound(useOffice.getState().sound); }} /> La voix de Max (« C’est parti ! », « Mission accomplie ! », la visite guidée)</label>
             <label className="radio"><input type="checkbox" checked={cameraAuto} onChange={(e) => { useOffice.setState({ cameraAuto: e.target.checked }); savePref('cameraAuto', e.target.checked); }} /> En mode tournage, la caméra suit l’action toute seule</label>
           </div>
-          <p className="small muted">Les réglages comptent pour la prochaine mission. L’équipe ne travaille que dans le dossier de la mission, et ne lance jamais rien hors du bureau sans te demander.</p>
-          {claude?.found && <p className="small muted">Claude Code {claude.version} · {tilde(dir)}</p>}
+          <div className="field">
+            <span>Le clavier</span>
+            <label className="radio"><input type="checkbox" checked={shortcuts} onChange={(e) => setShortcuts(e.target.checked)} /> Raccourcis à une lettre (V, F, C, T, J, N, M, H). Décoche si tu utilises la dictée vocale ou un clavier adapté.</label>
+          </div>
+          {!IS_ARTIFACT && <p className="small muted">Les réglages comptent pour la prochaine mission. L’équipe ne travaille que dans le dossier de la mission.</p>}
+          {!IS_ARTIFACT && claude?.found && <p className="small muted">Claude Code {claude.version} · {tilde(dir)}</p>}
           <div className="keys">
             <b>Raccourcis</b>
             <span><kbd>V</kbd> cadre vertical (reel)</span>
@@ -204,15 +212,14 @@ export function SettingsPanel() {
             <span>🥚 Il y a un code secret… (pense aux vieux jeux vidéo)</span>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalFrame>
   );
 }
 
 export function Toasts() {
   const toasts = useOffice((s) => s.toasts);
   return (
-    <div className="toasts">
+    <div className="toasts" role="status" aria-live="polite">
       {toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.text}</div>)}
     </div>
   );
